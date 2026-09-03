@@ -1,0 +1,51 @@
+{
+  "app_name": "Emergent BaaS Dashboard (F0 Foundation)",
+  "app_type": "dashboard",
+  "theme": "dark",
+  "archetype": "THE PERFORMANCE PRO / SWISS HIGH-CONTRAST",
+  "typography": {
+    "headings": {
+      "font_family": "Chivo, sans-serif",
+      "weights": ["700", "900"],
+      "letter_spacing": "tracking-tight"
+    },
+    "body": {
+      "font_family": "IBM Plex Sans, sans-serif",
+      "weights": ["400", "500", "600"]
+    },
+    "mono": {
+      "font_family": "JetBrains Mono, monospace"
+    }
+  },
+  "colors": {
+    "background": "#0a0a0c",
+    "card_background": "#121217",
+    "primary": "#007AFF",
+    "accent": "#FF3B30",
+    "success": "#10B981",
+    "warning": "#F59E0B",
+    "text_primary": "#F8FAFC",
+    "text_secondary": "#94A3B8",
+    "border": "#27272A"
+  },
+  "forbidden_rules": {
+    "forbidden_color_1": "#7351B7",
+    "forbidden_color_2": "#1B93A4",
+    "forbidden_font": "space grotesk",
+    "banned_headings_font": ["inter", "roboto", "open sans", "lato"]
+  },
+  "visual_enhancers": {
+    "border_radius": "8px",
+    "card_style": "flat rectangular with 1px subtle border",
+    "glassmorphism": "backdrop-blur-xl bg-black/60 border border-white/10"
+  },
+  "component_path": "/app/frontend/src/components",
+  "instructions_to_main_agent": "Build the F0 foundation repository structure with frontend (/frontend), backend (/backend), infrastructure (/infrastructure), docs (/docs), and tests (/tests). Implement FastAPI backend with async SQLAlchemy + PostgreSQL connection, GET /health endpoint with environment validation and timestamp, request correlation ID logging middleware, Docker Compose local stack with health checks, and a React minimal developer dashboard shell featuring navigation, system status, backend health status, and PostgreSQL connection indicator. Ensure all interactive elements include data-testid attributes.",
+  "image_urls": [],
+  "universal_guidelines": [
+    "Every interactive element MUST include data-testid",
+    "Never use forbidden colors (#7351B7 or #1B93A4)",
+    "Use strict grid hierarchy and cardless/sharp dense dashboard styles",
+    "Always set explicit text color on hover and focus states"
+  ]
+}
