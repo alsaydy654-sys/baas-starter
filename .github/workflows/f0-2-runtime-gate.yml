@@ -22,7 +22,7 @@ on:
       - '.github/workflows/f0-2-runtime-gate.yml'
 
 env:
-  FROZEN_SHA: b44feb43e14cbcbf314f9e1fb1646814bd9bd1cf
+  FROZEN_SHA: 39711cb749e900f1a22fd676524d6cc32d5e02cb
   COMPOSE_DIR: infrastructure
 
 # Only ever run one gate execution at a time to avoid port collisions.
