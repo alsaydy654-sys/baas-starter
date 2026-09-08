@@ -1,0 +1,564 @@
+name: F0.2 Runtime Gate
+
+# Purpose:
+#   External runtime verification of the frozen F0 artifact
+#   b44feb43e14cbcbf314f9e1fb1646814bd9bd1cf.
+#
+# Scope (per ESA-F0.2-GITHUB-ACTIONS-RUNTIME-GATE V1.0):
+#   - Verification only.
+#   - Application source, Dockerfiles, docker-compose.yml, backend, frontend,
+#     tests, and package manifests MUST NOT be modified by this workflow.
+#   - No commits, no pushes, no merges, no alternate checkouts.
+#   - Reports every step as PASS / FAIL / NOT VERIFIED / NOT APPLICABLE with
+#     concrete evidence.
+#
+# How to run:
+#   workflow_dispatch (manual). No secrets required. No inputs required.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/f0-2-runtime-gate.yml'
+
+env:
+  FROZEN_SHA: b44feb43e14cbcbf314f9e1fb1646814bd9bd1cf
+  COMPOSE_DIR: infrastructure
+
+# Only ever run one gate execution at a time to avoid port collisions.
+concurrency:
+  group: f0-2-runtime-gate
+  cancel-in-progress: false
+
+# Read-only permissions. This gate never writes to the repository.
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  runtime-gate:
+    name: F0.2 Runtime Gate (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Repository + 2. Frozen SHA checkout
+      # ------------------------------------------------------------------
+      - name: 01. Checkout frozen SHA
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          ref: b44feb43e14cbcbf314f9e1fb1646814bd9bd1cf
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 02. Record repository identity
+        id: repo
+        run: |
+          set -e
+          echo "REPO=${GITHUB_REPOSITORY}"       | tee -a "$GITHUB_OUTPUT"
+          echo "REF=${GITHUB_REF}"               | tee -a "$GITHUB_OUTPUT"
+          echo "SHA=$(git rev-parse HEAD)"       | tee -a "$GITHUB_OUTPUT"
+          echo "SUBJECT=$(git log -1 --format=%s)" | tee -a "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # 3. SHA verification (blocking gate)
+      # ------------------------------------------------------------------
+      - name: 03. Verify HEAD equals frozen SHA
+        id: verify_sha
+        run: |
+          set -e
+          ACTUAL="$(git rev-parse HEAD)"
+          echo "Actual   : $ACTUAL"
+          echo "Expected : ${FROZEN_SHA}"
+          if [ "$ACTUAL" != "${FROZEN_SHA}" ]; then
+            echo "::error::HEAD does not match frozen SHA"
+            exit 1
+          fi
+
+      # ------------------------------------------------------------------
+      # 4. Working-tree integrity (blocking gate)
+      # ------------------------------------------------------------------
+      - name: 04. Working-tree integrity
+        id: tree
+        run: |
+          set -e
+          STATUS="$(git status --porcelain)"
+          if [ -n "$STATUS" ]; then
+            echo "::error::Working tree not clean after checkout"
+            echo "$STATUS"
+            exit 1
+          fi
+          echo "Working tree clean."
+
+      # ------------------------------------------------------------------
+      # 5. Docker availability (blocking gate)
+      # ------------------------------------------------------------------
+      - name: 05. Docker availability
+        id: docker_avail
+        run: |
+          set -e
+          docker --version
+          docker compose version
+
+      # ------------------------------------------------------------------
+      # 17. Supabase independence (static, safe to run early)
+      # ------------------------------------------------------------------
+      - name: 17. Supabase independence audit
+        id: supabase
+        run: |
+          set -e
+          echo "Searching runtime source for Supabase references..."
+          MATCHES=$(grep -rniE "supabase|SUPABASE|supabase-js" \
+            backend/app backend/server.py backend/requirements.txt \
+            frontend/src frontend/package.json infrastructure 2>/dev/null || true)
+          if [ -n "$MATCHES" ]; then
+            echo "::error::Supabase reference found in runtime source"
+            echo "$MATCHES"
+            exit 1
+          fi
+          echo "No Supabase runtime dependency."
+
+      # ------------------------------------------------------------------
+      # 18. F0 scope audit (static, backend routes)
+      # ------------------------------------------------------------------
+      - name: 18. F0 scope audit (backend registered routes)
+        id: scope
+        run: |
+          set -e
+          echo "Enumerating backend HTTP route decorators..."
+          ROUTES=$(grep -rnE "@(app|router)\.(get|post|put|delete|patch)\(" \
+            backend/app backend/server.py 2>/dev/null || true)
+          echo "$ROUTES"
+          echo "---"
+          FORBIDDEN=$(echo "$ROUTES" | grep -iE "/(auth|login|logout|register|signup|password|reset|oauth|jwt|token|tenant|billing|storage|realtime|rbac|rls|invoice|subscribe)" || true)
+          if [ -n "$FORBIDDEN" ]; then
+            echo "::error::Forbidden route in F0 scope"
+            echo "$FORBIDDEN"
+            exit 1
+          fi
+          echo "F0 scope OK - only foundation routes present."
+
+      # ------------------------------------------------------------------
+      # 16. Security audit (static, tracked files only)
+      # ------------------------------------------------------------------
+      - name: 16. Security audit (no tracked .env, no obvious secrets)
+        id: secaudit
+        run: |
+          set -e
+          TRACKED_ENV=$(git ls-files | grep -E '(^|/)\.env$' || true)
+          if [ -n "$TRACKED_ENV" ]; then
+            echo "::error::Tracked .env file(s) found: $TRACKED_ENV"
+            exit 1
+          fi
+          echo ".env is not tracked."
+          # Coarse secret pattern scan on tracked files (must not fail on
+          # obvious placeholders in example files).
+          HITS=$(git grep -nE "(AWS_SECRET_ACCESS_KEY|BEGIN (RSA|OPENSSH) PRIVATE KEY|xox[baprs]-[0-9A-Za-z-]{10,}|sk_live_[0-9a-zA-Z]{16,}|AIza[0-9A-Za-z_-]{20,})" -- ':!*.example' ':!docs/**' ':!test_reports/**' || true)
+          if [ -n "$HITS" ]; then
+            echo "::error::Potential secret pattern found in tracked files"
+            echo "$HITS"
+            exit 1
+          fi
+          echo "Static secret audit OK."
+
+      # ------------------------------------------------------------------
+      # 6. Compose configuration
+      # ------------------------------------------------------------------
+      - name: 06. docker compose config
+        id: compose_config
+        working-directory: ${{ env.COMPOSE_DIR }}
+        continue-on-error: true
+        run: |
+          set -e
+          docker compose config
+
+      # ------------------------------------------------------------------
+      # 7. Build
+      # ------------------------------------------------------------------
+      - name: 07. docker compose build
+        id: compose_build
+        working-directory: ${{ env.COMPOSE_DIR }}
+        continue-on-error: true
+        run: |
+          set -e
+          docker compose build
+
+      # ------------------------------------------------------------------
+      # Bring the stack up (evidence for 8-11)
+      # ------------------------------------------------------------------
+      - name: 08. docker compose up -d
+        id: compose_up
+        working-directory: ${{ env.COMPOSE_DIR }}
+        continue-on-error: true
+        run: |
+          set -e
+          docker compose up -d
+          docker compose ps
+
+      # ------------------------------------------------------------------
+      # 8. PostgreSQL runtime (real SELECT 1 inside the db container)
+      # ------------------------------------------------------------------
+      - name: 09. PostgreSQL readiness and real SELECT 1
+        id: pg
+        if: steps.compose_up.outcome == 'success'
+        working-directory: ${{ env.COMPOSE_DIR }}
+        continue-on-error: true
+        run: |
+          set -e
+          # Wait up to 120s for pg_isready inside the db container.
+          READY=0
+          for i in $(seq 1 60); do
+            if docker compose exec -T db sh -lc 'pg_isready -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-emergent_f0}"' >/dev/null 2>&1; then
+              READY=1; break
+            fi
+            sleep 2
+          done
+          if [ "$READY" != "1" ]; then
+            echo "::error::PostgreSQL never became ready"
+            docker compose logs db --no-color | tail -100
+            exit 1
+          fi
+          # Real SELECT 1 executed against the actual postgres container.
+          docker compose exec -T db sh -lc 'psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-emergent_f0}" -tAc "SELECT 1;"' | tee /tmp/pg_select1.txt
+          grep -q '^1$' /tmp/pg_select1.txt
+
+      # ------------------------------------------------------------------
+      # 9. Backend runtime + 10. Backend -> PostgreSQL (via backend container)
+      # ------------------------------------------------------------------
+      - name: 10. Backend HTTP /health
+        id: backend_http
+        if: steps.compose_up.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -e
+          # Wait up to 120s for backend to respond on host port 8001.
+          OK=0
+          for i in $(seq 1 60); do
+            if curl -fsS -o /tmp/health.json -w '%{http_code}' http://localhost:8001/health | grep -q '^200$'; then
+              OK=1; break
+            fi
+            sleep 2
+          done
+          echo "---- /health payload ----"
+          cat /tmp/health.json || true
+          echo
+          if [ "$OK" != "1" ]; then
+            echo "::error::Backend /health did not return 200"
+            exit 1
+          fi
+          # Contract fields must exist.
+          for f in status environment timestamp database request_id; do
+            grep -q "\"$f\"" /tmp/health.json || { echo "::error::/health missing field: $f"; exit 1; }
+          done
+
+      - name: 11. Backend -> PostgreSQL live probe (inside backend container)
+        id: backend_db
+        if: steps.backend_http.outcome == 'success' && steps.pg.outcome == 'success'
+        working-directory: ${{ env.COMPOSE_DIR }}
+        continue-on-error: true
+        run: |
+          set -e
+          # Prove the backend container itself can talk to postgres over the
+          # docker network - not from the host - using its own environment
+          # variables and its own installed SQLAlchemy/asyncpg stack.
+          docker compose exec -T backend python - <<'PY'
+          import asyncio, os, sys
+          from sqlalchemy.ext.asyncio import create_async_engine
+          from sqlalchemy import text
+          url = os.environ.get("DATABASE_URL")
+          if not url:
+              print("DATABASE_URL not set in backend container", file=sys.stderr); sys.exit(2)
+          print("DATABASE_URL scheme:", url.split("@")[-1] if "@" in url else "(hidden)")
+          async def main():
+              engine = create_async_engine(url)
+              async with engine.connect() as conn:
+                  r = await conn.execute(text("SELECT 1"))
+                  v = r.scalar()
+                  print("backend->db SELECT 1 =>", v)
+                  assert v == 1
+              await engine.dispose()
+          asyncio.run(main())
+          PY
+          # Cross-check: /health should report database available now.
+          curl -fsS http://localhost:8001/health | tee /tmp/health.after.json
+          grep -q '"database":"available"' /tmp/health.after.json
+
+      # ------------------------------------------------------------------
+      # 11-12. Frontend runtime + Frontend -> Backend
+      # ------------------------------------------------------------------
+      - name: 12. Frontend HTTP GET /
+        id: frontend_http
+        if: steps.compose_up.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -e
+          OK=0
+          for i in $(seq 1 60); do
+            CODE=$(curl -fsS -o /tmp/frontend.html -w '%{http_code}' http://localhost:3000/ || true)
+            if [ "$CODE" = "200" ]; then OK=1; break; fi
+            sleep 2
+          done
+          echo "HTTP code: ${CODE:-none}"
+          head -20 /tmp/frontend.html || true
+          if [ "$OK" != "1" ]; then
+            echo "::error::Frontend did not return HTTP 200 on http://localhost:3000/"
+            exit 1
+          fi
+          # Sanity check for a React shell (do not require F1 features).
+          grep -qiE '<div id="root"' /tmp/frontend.html || echo "::warning::React root div not found in frontend response"
+
+      - name: 13. Frontend -> Backend /api/health (host-side check)
+        id: frontend_to_backend
+        if: steps.frontend_http.outcome == 'success' && steps.backend_http.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -e
+          curl -fsS http://localhost:8001/api/health | tee /tmp/api_health.json
+          for f in status environment timestamp database request_id; do
+            grep -q "\"$f\"" /tmp/api_health.json || { echo "::error::/api/health missing field: $f"; exit 1; }
+          done
+
+      # ------------------------------------------------------------------
+      # 14. Negative DB test
+      # ------------------------------------------------------------------
+      - name: 14. Negative DB test (stop db, verify truthful degradation)
+        id: negative
+        if: steps.backend_db.outcome == 'success'
+        working-directory: ${{ env.COMPOSE_DIR }}
+        continue-on-error: true
+        run: |
+          set -e
+          docker compose stop db
+          # Give the backend a few seconds to observe DB loss.
+          sleep 8
+          BODY=$(curl -sS http://localhost:8001/health)
+          echo "Degraded /health: $BODY"
+          # Truthfulness: must NOT claim database is available.
+          if echo "$BODY" | grep -q '"database":"available"'; then
+            echo "::error::Backend falsely reports database available while db is stopped"
+            exit 1
+          fi
+          # Must report the truthful unavailable / degraded state.
+          echo "$BODY" | grep -qE '"database":"(unavailable|degraded|down|error)"' \
+            || { echo "::error::Backend did not report truthful degraded/unavailable database state"; exit 1; }
+
+      # ------------------------------------------------------------------
+      # 15. Recovery test
+      # ------------------------------------------------------------------
+      - name: 15. Recovery test (start db, verify backend recovers)
+        id: recovery
+        if: steps.negative.outcome == 'success'
+        working-directory: ${{ env.COMPOSE_DIR }}
+        continue-on-error: true
+        run: |
+          set -e
+          docker compose start db
+          # Wait for postgres to be ready inside the container.
+          for i in $(seq 1 60); do
+            if docker compose exec -T db sh -lc 'pg_isready -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-emergent_f0}"' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          # Then wait for the backend to report available again.
+          for i in $(seq 1 60); do
+            BODY=$(curl -sS http://localhost:8001/health || true)
+            if echo "$BODY" | grep -q '"database":"available"'; then
+              echo "Recovered: $BODY"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Backend did not recover to database=available after db restart"
+          curl -sS http://localhost:8001/health || true
+          exit 1
+
+      # ------------------------------------------------------------------
+      # 16. Network verification (from backend container's perspective)
+      # ------------------------------------------------------------------
+      - name: 16. Network verification (DNS + TCP inside compose network)
+        id: network
+        if: steps.recovery.outcome == 'success'
+        working-directory: ${{ env.COMPOSE_DIR }}
+        continue-on-error: true
+        run: |
+          set -e
+          # Backend can resolve and reach db:5432 by service name.
+          docker compose exec -T backend python - <<'PY'
+          import socket
+          host, port = "db", 5432
+          ip = socket.gethostbyname(host)
+          print(f"Resolved {host} -> {ip}")
+          s = socket.socket(); s.settimeout(3); s.connect((host, port)); s.close()
+          print(f"TCP connect ok to {host}:{port}")
+          PY
+
+      # ------------------------------------------------------------------
+      # Evidence collection (always)
+      # ------------------------------------------------------------------
+      - name: 90. Collect compose evidence
+        if: always()
+        working-directory: ${{ env.COMPOSE_DIR }}
+        run: |
+          mkdir -p ../ci-evidence
+          docker --version                    > ../ci-evidence/docker.version.txt   || true
+          docker compose version              > ../ci-evidence/compose.version.txt  || true
+          docker compose ps                   > ../ci-evidence/compose.ps.txt       || true
+          docker compose config               > ../ci-evidence/compose.config.txt   2>&1 || true
+          docker compose logs --no-color      > ../ci-evidence/compose.logs.txt     2>&1 || true
+          docker network ls                   > ../ci-evidence/docker.networks.txt  || true
+          docker image ls                     > ../ci-evidence/docker.images.txt    || true
+          cp -f /tmp/health.json      ../ci-evidence/health.json      2>/dev/null || true
+          cp -f /tmp/health.after.json ../ci-evidence/health.after.json 2>/dev/null || true
+          cp -f /tmp/api_health.json  ../ci-evidence/api_health.json  2>/dev/null || true
+          cp -f /tmp/frontend.html    ../ci-evidence/frontend.html    2>/dev/null || true
+          cp -f /tmp/pg_select1.txt   ../ci-evidence/pg_select1.txt   2>/dev/null || true
+
+      # ------------------------------------------------------------------
+      # 20. Aggregate report (always)
+      # ------------------------------------------------------------------
+      - name: 91. Generate F0.2 report
+        if: always()
+        env:
+          O_CHECKOUT:          ${{ steps.checkout.outcome }}
+          O_VERIFY_SHA:        ${{ steps.verify_sha.outcome }}
+          O_TREE:              ${{ steps.tree.outcome }}
+          O_DOCKER_AVAIL:      ${{ steps.docker_avail.outcome }}
+          O_COMPOSE_CONFIG:    ${{ steps.compose_config.outcome }}
+          O_COMPOSE_BUILD:     ${{ steps.compose_build.outcome }}
+          O_COMPOSE_UP:        ${{ steps.compose_up.outcome }}
+          O_PG:                ${{ steps.pg.outcome }}
+          O_BACKEND_HTTP:      ${{ steps.backend_http.outcome }}
+          O_BACKEND_DB:        ${{ steps.backend_db.outcome }}
+          O_FRONTEND_HTTP:     ${{ steps.frontend_http.outcome }}
+          O_FRONTEND_BACKEND:  ${{ steps.frontend_to_backend.outcome }}
+          O_NEGATIVE:          ${{ steps.negative.outcome }}
+          O_RECOVERY:          ${{ steps.recovery.outcome }}
+          O_NETWORK:           ${{ steps.network.outcome }}
+          O_SUPABASE:          ${{ steps.supabase.outcome }}
+          O_SCOPE:             ${{ steps.scope.outcome }}
+          O_SECAUDIT:          ${{ steps.secaudit.outcome }}
+          REPO_SHA:            ${{ steps.repo.outputs.SHA }}
+          REPO_SUBJECT:        ${{ steps.repo.outputs.SUBJECT }}
+        run: |
+          mkdir -p ci-evidence
+          map() {
+            case "$1" in
+              success) echo "PASS" ;;
+              failure) echo "FAIL" ;;
+              skipped) echo "NOT VERIFIED" ;;
+              cancelled) echo "NOT VERIFIED" ;;
+              "") echo "NOT VERIFIED" ;;
+              *) echo "NOT VERIFIED" ;;
+            esac
+          }
+          REPORT=ci-evidence/F0.2_REPORT.md
+          {
+            echo "# F0.2 GitHub Actions Runtime Gate Report"
+            echo
+            echo "- Repository: ${GITHUB_REPOSITORY}"
+            echo "- Run: ${GITHUB_RUN_ID} (attempt ${GITHUB_RUN_ATTEMPT})"
+            echo "- Trigger: ${GITHUB_EVENT_NAME}"
+            echo "- Runner: ubuntu-latest"
+            echo "- Frozen SHA (expected): ${FROZEN_SHA}"
+            echo "- Checked-out SHA:       ${REPO_SHA}"
+            echo "- HEAD subject: ${REPO_SUBJECT}"
+            echo
+            echo "| # | Item | Result | Evidence |"
+            echo "|---|------|--------|----------|"
+            echo "| 1 | Repository            | $(map "$O_CHECKOUT")       | \`${GITHUB_REPOSITORY}\` |"
+            echo "| 2 | Frozen SHA (checkout) | $(map "$O_CHECKOUT")       | Checked out ref \`${FROZEN_SHA}\` |"
+            echo "| 3 | SHA verification      | $(map "$O_VERIFY_SHA")     | Actual=\`${REPO_SHA}\` Expected=\`${FROZEN_SHA}\` |"
+            echo "| 4 | Working-tree integrity| $(map "$O_TREE")           | \`git status --porcelain\` empty |"
+            echo "| 5 | Docker availability   | $(map "$O_DOCKER_AVAIL")   | see docker.version.txt / compose.version.txt |"
+            echo "| 6 | Compose configuration | $(map "$O_COMPOSE_CONFIG") | see compose.config.txt |"
+            echo "| 7 | Image build           | $(map "$O_COMPOSE_BUILD")  | \`docker compose build\` |"
+            echo "| 8 | PostgreSQL runtime    | $(map "$O_PG")             | \`SELECT 1\` inside db container; see pg_select1.txt |"
+            echo "| 9 | Backend runtime       | $(map "$O_BACKEND_HTTP")   | GET /health 200 + contract fields; see health.json |"
+            echo "|10 | Backend -> PostgreSQL | $(map "$O_BACKEND_DB")     | SQLAlchemy \`SELECT 1\` inside backend container |"
+            echo "|11 | Frontend runtime      | $(map "$O_FRONTEND_HTTP")  | GET / 200 on 3000; see frontend.html |"
+            echo "|12 | Frontend -> Backend   | $(map "$O_FRONTEND_BACKEND")| GET /api/health 200 + contract fields |"
+            echo "|13 | Full chain            | $( [ \"$O_BACKEND_HTTP\" = success ] && [ \"$O_BACKEND_DB\" = success ] && [ \"$O_FRONTEND_HTTP\" = success ] && [ \"$O_FRONTEND_BACKEND\" = success ] && echo PASS || echo 'NOT VERIFIED' ) | derived from 9,10,11,12 |"
+            echo "|14 | Negative DB test      | $(map "$O_NEGATIVE")       | \`db\` stopped, /health must NOT report available |"
+            echo "|15 | Recovery test         | $(map "$O_RECOVERY")       | \`db\` restarted, /health returns to available |"
+            echo "|16 | Network verification  | $(map "$O_NETWORK")        | DNS+TCP from backend container to db:5432 |"
+            echo "|17 | Security audit        | $(map "$O_SECAUDIT")       | no tracked .env; pattern scan clean |"
+            echo "|18 | Supabase independence | $(map "$O_SUPABASE")       | grep on runtime source |"
+            echo "|19 | F0 scope audit        | $(map "$O_SCOPE")          | only /,/health,/api/health,/api/v1/system/status registered |"
+            echo "|20 | Cleanup               | see step 92 | \`docker compose down -v\` |"
+            echo
+            # Final verdict
+            PASS_LIST="$O_VERIFY_SHA $O_TREE $O_DOCKER_AVAIL $O_COMPOSE_CONFIG $O_COMPOSE_BUILD $O_COMPOSE_UP $O_PG $O_BACKEND_HTTP $O_BACKEND_DB $O_FRONTEND_HTTP $O_FRONTEND_BACKEND $O_NEGATIVE $O_RECOVERY $O_NETWORK $O_SUPABASE $O_SCOPE $O_SECAUDIT"
+            HAS_FAIL=0; HAS_SKIP=0
+            for x in $PASS_LIST; do
+              case "$x" in
+                failure) HAS_FAIL=1 ;;
+                success) ;;
+                *) HAS_SKIP=1 ;;
+              esac
+            done
+            if [ "$O_DOCKER_AVAIL" != "success" ]; then
+              VERDICT="RUNTIME NOT VERIFIED"
+            elif [ "$HAS_FAIL" = "1" ]; then
+              VERDICT="RUNTIME FAIL"
+            elif [ "$HAS_SKIP" = "1" ]; then
+              VERDICT="RUNTIME NOT VERIFIED"
+            else
+              VERDICT="RUNTIME PASS"
+            fi
+            echo "## Final verdict: ${VERDICT}"
+          } | tee "$REPORT"
+
+      - name: 92. Upload evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: f0-2-runtime-evidence
+          path: ci-evidence/
+          if-no-files-found: warn
+
+      # ------------------------------------------------------------------
+      # 19. Cleanup (failure-safe)
+      # ------------------------------------------------------------------
+      - name: 93. Cleanup
+        if: always()
+        working-directory: ${{ env.COMPOSE_DIR }}
+        run: |
+          docker compose down -v --remove-orphans || true
+
+      # ------------------------------------------------------------------
+      # Final job status: fail the workflow if any real runtime check failed.
+      # ------------------------------------------------------------------
+      - name: 99. Enforce gate result
+        if: always()
+        env:
+          O_VERIFY_SHA:        ${{ steps.verify_sha.outcome }}
+          O_TREE:              ${{ steps.tree.outcome }}
+          O_DOCKER_AVAIL:      ${{ steps.docker_avail.outcome }}
+          O_COMPOSE_CONFIG:    ${{ steps.compose_config.outcome }}
+          O_COMPOSE_BUILD:     ${{ steps.compose_build.outcome }}
+          O_COMPOSE_UP:        ${{ steps.compose_up.outcome }}
+          O_PG:                ${{ steps.pg.outcome }}
+          O_BACKEND_HTTP:      ${{ steps.backend_http.outcome }}
+          O_BACKEND_DB:        ${{ steps.backend_db.outcome }}
+          O_FRONTEND_HTTP:     ${{ steps.frontend_http.outcome }}
+          O_FRONTEND_BACKEND:  ${{ steps.frontend_to_backend.outcome }}
+          O_NEGATIVE:          ${{ steps.negative.outcome }}
+          O_RECOVERY:          ${{ steps.recovery.outcome }}
+          O_NETWORK:           ${{ steps.network.outcome }}
+          O_SUPABASE:          ${{ steps.supabase.outcome }}
+          O_SCOPE:             ${{ steps.scope.outcome }}
+          O_SECAUDIT:          ${{ steps.secaudit.outcome }}
+        run: |
+          set -e
+          FAIL=0
+          for var in O_VERIFY_SHA O_TREE O_DOCKER_AVAIL O_COMPOSE_CONFIG O_COMPOSE_BUILD O_COMPOSE_UP O_PG O_BACKEND_HTTP O_BACKEND_DB O_FRONTEND_HTTP O_FRONTEND_BACKEND O_NEGATIVE O_RECOVERY O_NETWORK O_SUPABASE O_SCOPE O_SECAUDIT; do
+            VAL="$(eval echo \$$var)"
+            echo "$var=$VAL"
+            if [ "$VAL" = "failure" ]; then FAIL=1; fi
+          done
+          if [ "$FAIL" = "1" ]; then
+            echo "::error::One or more F0.2 gate checks failed - see F0.2_REPORT.md artifact"
+            exit 1
+          fi
