@@ -49,7 +49,7 @@ jobs:
         id: checkout
         uses: actions/checkout@v4
         with:
-          ref: b44feb43e14cbcbf314f9e1fb1646814bd9bd1cf
+          ref: 39711cb749e900f1a22fd676524d6cc32d5e02cb
           fetch-depth: 0
           persist-credentials: false
 
