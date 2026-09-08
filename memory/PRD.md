@@ -36,6 +36,7 @@ Implement the EMERGENT SUPABASE ALTERNATIVE MASTER BUILD CONTRACT V0.1, PHASE F0
 - Added Dockerfiles, Docker Compose, `.env.example`, `.gitignore`, README, architecture/security/roadmap documentation.
 - Added pytest coverage for health, ingress alias, environment validation, and no-Supabase dependency.
 - Verified backend tests (4/4), frontend production build, browser dashboard flow, and static Compose configuration.
+- Final F0 gate: corrected Compose frontend port mapping and POSTGRES_* interpolation; static checks, tests, scans, and browser verification passed. Docker runtime and live PostgreSQL remain NOT VERIFIED because Docker is unavailable.
 
 ## Acceptance and limitations
 
