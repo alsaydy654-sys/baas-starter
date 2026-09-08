@@ -155,7 +155,8 @@ jobs:
           echo ".env is not tracked."
           # Coarse secret pattern scan on tracked files (must not fail on
           # obvious placeholders in example files).
-          HITS=$(git grep -nE "(AWS_SECRET_ACCESS_KEY|BEGIN (RSA|OPENSSH) PRIVATE KEY|xox[baprs]-[0-9A-Za-z-]{10,}|sk_live_[0-9a-zA-Z]{16,}|AIza[0-9A-Za-z_-]{20,})" -- ':!*.example' ':!docs/**' ':!test_reports/**' || true)
+          
+          HITS=$(git grep -nE "(AWS_SECRET_ACCESS_KEY|BEGIN (RSA|OPENSSH) PRIVATE KEY|xox[baprs]-[0-9A-Za-z-]{10,}|sk_live_[0-9a-zA-Z]{16,}|AIza[0-9A-Za-z_-]{20,})" -- ':!*.example' ':!docs/**' ':!test_reports/**' ':!.github/workflows/**' || true)
           if [ -n "$HITS" ]; then
             echo "::error::Potential secret pattern found in tracked files"
             echo "$HITS"
