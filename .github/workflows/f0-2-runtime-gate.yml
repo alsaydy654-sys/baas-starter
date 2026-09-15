@@ -366,7 +366,7 @@ jobs:
           # Then wait for the backend to report available again.
           for i in $(seq 1 60); do
             BODY=$(curl -sS http://localhost:8001/health || true)
-            if echo "$BODY" | grep -q '"database":"available"'; then
+            if echo "$BODY" | grep -q '"database":"connected"'; then
               echo "Recovered: $BODY"; exit 0
             fi
             sleep 2
