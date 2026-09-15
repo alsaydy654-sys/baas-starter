@@ -282,7 +282,7 @@ jobs:
               await engine.dispose()
           asyncio.run(main())
           PY
-          # Cross-check: /health should report database available now.
+          # Cross-check: /health should report database connected now.
           curl -fsS http://localhost:8001/health | tee /tmp/health.after.json
           grep -q '"database":"connected"' /tmp/health.after.json
 
@@ -338,7 +338,7 @@ jobs:
           echo "Degraded /health: $BODY"
           # Truthfulness: must NOT claim database is available.
           if echo "$BODY" | grep -q '"database":"available"'; then
-            echo "::error::Backend falsely reports database available while db is stopped"
+            echo "::error::Backend falsely reports database connected while db is stopped"
             exit 1
           fi
           # Must report the truthful unavailable / degraded state.
