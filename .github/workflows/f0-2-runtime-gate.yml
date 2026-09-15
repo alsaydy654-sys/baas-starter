@@ -284,7 +284,7 @@ jobs:
           PY
           # Cross-check: /health should report database available now.
           curl -fsS http://localhost:8001/health | tee /tmp/health.after.json
-          grep -q '"database":"available"' /tmp/health.after.json
+          grep -q '"database":"connected"' /tmp/health.after.json
 
       # ------------------------------------------------------------------
       # 11-12. Frontend runtime + Frontend -> Backend
